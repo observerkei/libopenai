@@ -1,22 +1,19 @@
 #include "libopenai_api.h"
 
-#include <curl/curl.h>
-#include <iostream>
-#include <string>
-#include <vector>
-
 #include <assert.h>
+#include <curl/curl.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <ctime>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
-#include <unistd.h>
+#include <vector>
 
-#include <curl/curl.h>
-
-#define log_dbg(fmt, ...) printf("%s %s %ld " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
+#define log_dbg(fmt, ...) \
+    printf("%s %s %ld " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
 #define log_err log_dbg
 #define log_info log_dbg
 
@@ -38,13 +35,13 @@ public:
 
     CurlAsync(const CurlAsync& other) = delete;
 
-    ~CurlAsync()
-    {
-        curl_cleanup();
-    }
+    ~CurlAsync() { curl_cleanup(); }
 
     // 回调函数，用于处理返回的数据
-    static size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
+    static size_t write_callback(char* ptr,
+        size_t size,
+        size_t nmemb,
+        void* userdata)
     {
         if (!userdata)
             return CURLE_WRITE_ERROR;
@@ -222,61 +219,6 @@ public:
     public:
         struct Request {
         public:
-            Request()
-                : temperature(1)
-                , top_p(1)
-                , n(1)
-                , stream(true)
-                , presence_penalty(0)
-                , frequency_penalty(0)
-                , m_curl_async(nullptr)
-                , api_base("https://api.openai.com/v1/chat/completions")
-            {
-            }
-
-            Request(const Request& other)
-            {
-                *this = other;
-                this->m_curl_async = nullptr;
-            }
-
-            ~Request()
-            {
-                if (this->m_curl_async)
-                    delete this->m_curl_async;
-            }
-
-            void set_curl_async(CurlAsync* curl_async)
-            {
-                if (!curl_async)
-                    return;
-                if (this->m_curl_async)
-                    delete this->m_curl_async;
-                this->m_curl_async = curl_async;
-            }
-
-            bool curl_has_init()
-            {
-                return (this->m_curl_async && this->m_curl_async->m_init) ? true : false;
-            }
-
-            int curl_pull()
-            {
-                if (!curl_has_init())
-                    return 0;
-                return this->m_curl_async->pull();
-            }
-
-            std::string curl_res()
-            {
-                if (!curl_has_init()) {
-
-                    return "curl no init";
-                }
-
-                return this->m_curl_async->m_answer;
-            }
-
             std::string json_str()
             {
                 nlohmann::json json_messages = nlohmann::json::array();
@@ -293,16 +235,14 @@ public:
                     json_messages.push_back(json_obj);
                 }
 
-                nlohmann::json json_dump = {
-                    { "stream", this->stream },
+                nlohmann::json json_dump = { { "stream", this->stream },
                     { "model", this->model },
-                    { "messages", json_messages }
-                };
+                    { "messages", json_messages } };
 
                 return json_dump.dump();
             }
 
-            std::string api_base;
+            std::string api_base = "https://api.openai.com/v1/chat/completions";
             std::string api_key;
 
             std::string model;
@@ -324,19 +264,16 @@ public:
 
             nlohmann::json function_call;
 
-            float temperature;
-            float top_p;
-            int n;
-            bool stream;
+            float temperature = 1;
+            float top_p = 1;
+            int n = 1;
+            bool stream = true;
             std::vector<std::string> stop;
             int max_tokens;
-            float presence_penalty;
-            float frequency_penalty;
+            float presence_penalty = 0;
+            float frequency_penalty = 0;
             std::string logit_bias;
             std::string user;
-
-        private:
-            CurlAsync* m_curl_async;
         };
 
         class create {
@@ -344,22 +281,31 @@ public:
             typedef struct
             {
                 Request req;
+                CurlAsync* curl_async;
             } ctx_t;
 
         public:
             create(Request& req)
-                : m_ctx({ .req = req })
+                : m_ctx({ .req = req, .curl_async = nullptr })
             {
             }
 
             create(Request&& req)
-                : m_ctx({ .req = req })
+                : m_ctx({ .req = req, .curl_async = nullptr })
             {
+            }
+
+            ~create()
+            {
+                if (this->m_ctx.curl_async) {
+                    delete this->m_ctx.curl_async;
+                    this->m_ctx.curl_async = nullptr;
+                }
             }
 
             int setup()
             {
-                if (this->m_ctx.req.curl_has_init()) {
+                if (this->m_ctx.curl_async && this->m_ctx.curl_async->m_init) {
                     return 0;
                 }
                 CurlAsync* curl_async = new CurlAsync;
@@ -372,8 +318,7 @@ public:
                     "Authorization: Bearer " + this->m_ctx.req.api_key,
                 };
                 std::string js_body = this->m_ctx.req.json_str();
-                int ret = curl_async->curl_init(
-                    CurlAsync::method_t::POST,
+                int ret = curl_async->curl_init(CurlAsync::method_t::POST,
                     this->m_ctx.req.api_base,
                     headers,
                     js_body);
@@ -383,7 +328,7 @@ public:
                     return -1;
                 }
 
-                this->m_ctx.req.set_curl_async(curl_async);
+                this->m_ctx.curl_async = curl_async;
                 log_dbg("new init done");
                 return 0;
             }
@@ -398,7 +343,11 @@ public:
 
                 std::string operator*()
                 {
-                    return this->m_ctx->req.curl_res();
+                    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
+                        log_err("iterator*: curl no init");
+                        return "";
+                    }
+                    return this->m_ctx->curl_async->m_answer;
                 }
 
                 bool operator!=(const iterator& other) const
@@ -413,12 +362,12 @@ public:
 
                 void operator++()
                 {
-                    if (!this->m_ctx->req.curl_has_init()) {
+                    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
                         this->m_complete = true;
-                        log_err("iterator: curl no init");
+                        log_err("iterator++: curl no init");
                         return;
                     }
-                    this->m_complete = this->m_ctx->req.curl_pull() ? false : true;
+                    this->m_complete = this->m_ctx->curl_async->pull() ? false : true;
                 }
 
             private:
@@ -432,10 +381,7 @@ public:
                 return iterator(&this->m_ctx, false);
             }
 
-            iterator end()
-            {
-                return iterator(&this->m_ctx, true);
-            }
+            iterator end() { return iterator(&this->m_ctx, true); }
 
         private:
             ctx_t m_ctx;
@@ -445,16 +391,12 @@ public:
 
 int main(int argc, char* argv[])
 {
-    OpenaiAPI::ChatCompletion::Request req;
-    req.api_key = "";
-    req.model = "gpt-3.5-turbo";
-    req.messages = {
-        { .role = "system", .content = "You are a helpful assistant." },
-        { .role = "user", .content = "what you name ?" }
-    };
-
-    for (const auto& answer :
-        OpenaiAPI::ChatCompletion::create(req)) {
+    for (const auto& answer : OpenaiAPI::ChatCompletion::create(
+             { .api_key = "",
+               .model = "gpt-3.5-turbo",
+               .messages = {
+                   { .role = "system", .content = "You are a helpful assistant." },
+                   { .role = "user", .content = "what you name ?" } } })) {
         std::cout << answer << std::endl;
     }
     return 0;
