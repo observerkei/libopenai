@@ -1,0 +1,8 @@
+# C extensions
+*.so
+*.o
+
+#vscode
+.vscode/
+
+openai_api.app

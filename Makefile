@@ -3,15 +3,15 @@ TARGET = openai_api.$(TYPE)
 
 CC = g++
 OBJS = $(wildcard *.cpp)
+LIBS = -g  -pthread -lcurl -lssl -lcrypto -lz  
 
-TARGET: $(OBJS:.cpp=.o)
-	$(CC) $^ -o $@
+$(TARGET): $(OBJS:.cpp=.o)
+	$(CC) $^ -o $@ $(LIBS)
 
 %.o:%.cpp
-	$(CC) $^ -o $@
-
+	$(CC) $^ -c -o $@
 
 clean:
-	rm -f *.o $(TARGET)
+	rm -f $(OBJS:.cpp=.o) $(TARGET)
 
 PHONY: clean
