@@ -48,17 +48,22 @@ public:
 
         CurlAsync* curl_async = (CurlAsync*)userdata;
 
+        if (size * nmemb) {
+            curl_async->m_has_res = true;
+        }
+
         // 处理返回的数据，这里只是简单地将其输出到控制台
         // log_dbg("size: %zu, nmemb:%zu\n", size, nmemb);
         if (curl_async->m_has_stop) {
             curl_async->m_has_stop = 0;
+
             std::stringstream ss(ptr);
             std::string line;
 
             while (std::getline(ss, line)) {
                 if (0 != strncmp("data: ", line.c_str(), 6)) {
-                    // if (line.length())
-                    //     log_dbg("skip data: %s", line.c_str());
+                    if (line.length() && '{' == line[0])
+                        log_dbg("skip data: %s", line.c_str());
                     continue;
                 }
                 std::string data(line.c_str() + 6, line.length() - 6);
@@ -68,9 +73,15 @@ public:
                 }
                 try {
                     nlohmann::json res = nlohmann::json::parse(data.c_str());
+                    if (!res.is_null()) {
+                        curl_async->m_res.clear();
+                        curl_async->m_res.push_back(res);
+                    }
                     if (res["choices"][0]["finish_reason"].is_null()) {
                         std::string content = res["choices"][0]["delta"]["content"];
                         curl_async->m_answer += content;
+                        std::string model = res["model"];
+                        curl_async->m_model = model;
                         // std::cout << "answer: " << content << std::endl;
                         // std::cout << curl_async->m_answer << std::endl;
                     }
@@ -153,25 +164,26 @@ public:
     {
         CURLMcode mc;
         int numfds;
-        mc = curl_multi_perform(this->m_multi_handle, &this->still_running);
 
-        if (mc == CURLM_OK) {
-            /* wait for activity or timeout */
-            mc = curl_multi_poll(this->m_multi_handle, NULL, 0, 1000, &numfds);
-        }
-        if (mc != CURLM_OK) {
-            log_err("curl_multi failed, code %d.\n", mc);
-            return 0;
-        }
-
-        if (this->m_has_stop) {
-            // 恢复传输
-            CURLcode res = curl_easy_pause(this->m_curl, CURLPAUSE_CONT);
-            if (res != CURLE_OK) {
-                log_err("curl_easy_pause() failed: %s\n", curl_easy_strerror(res));
+        do {
+            mc = curl_multi_perform(this->m_multi_handle, &this->still_running);
+            if (mc == CURLM_OK) {
+                /* wait for activity or timeout */
+                mc = curl_multi_poll(this->m_multi_handle, NULL, 0, 1000, &numfds);
+            } else {
+                log_err("curl_multi failed, code %d.\n", mc);
+                return 0;
             }
-            // log_dbg("restore write.");
-        }
+
+            if (this->m_has_stop) {
+                // 恢复传输
+                CURLcode res = curl_easy_pause(this->m_curl, CURLPAUSE_CONT);
+                if (res != CURLE_OK) {
+                    log_err("curl_easy_pause() failed: %s\n", curl_easy_strerror(res));
+                }
+                // log_dbg("restore write.");
+            }
+        } while (this->still_running && !this->m_has_res);
 
         return this->still_running;
     }
@@ -198,9 +210,12 @@ public:
         log_dbg("clear");
     }
 
+    std::vector<nlohmann::json> m_res;
     std::string m_answer;
+    std::string m_model;
     bool m_has_stop;
     bool m_init;
+    bool m_has_res;
 
 private:
     int still_running;
@@ -219,7 +234,7 @@ public:
     public:
         struct Request {
         public:
-            std::string json_str()
+            std::string json_body()
             {
                 nlohmann::json json_messages = nlohmann::json::array();
 
@@ -239,7 +254,14 @@ public:
                     { "model", this->model },
                     { "messages", json_messages } };
 
-                return json_dump.dump();
+                std::string jsd;
+                try {
+                    jsd = json_dump.dump(4, ' ', false, nlohmann::json::error_handler_t::ignore);
+                } catch (const nlohmann::json::exception& e) {
+                    std::cerr << "fail to dump js: " << e.what() << std::endl;
+                }
+
+                return jsd;
             }
 
             std::string api_base = "https://api.openai.com/v1/chat/completions";
@@ -253,14 +275,16 @@ public:
                 std::string name;
                 std::string function_call;
             };
-            std::vector<message_t> messages;
+            typedef std::vector<message_t> messages_t;
+            messages_t messages;
 
             struct function_t {
                 std::string name;
                 std::string description;
                 nlohmann::json parameters;
             };
-            std::vector<function_t> functions;
+            typedef std::vector<function_t> functions_t;
+            functions_t functions;
 
             nlohmann::json function_call;
 
@@ -276,6 +300,25 @@ public:
             std::string user;
         };
 
+        struct Response {
+            nlohmann::json data;
+            std::string id;
+            std::string object;
+            long created;
+            std::string model;
+            std::string content;
+
+            struct choice_t {
+                struct delta_t {
+                    std::string content;
+                };
+                int index;
+                delta_t delta;
+                std::string finish_reason;
+            };
+            std::vector<choice_t> choices;
+        };
+
         class create {
         public:
             typedef struct
@@ -283,6 +326,12 @@ public:
                 Request req;
                 CurlAsync* curl_async;
             } ctx_t;
+
+            typedef struct {
+                std::vector<nlohmann::json>* res;
+                std::string content;
+                std::string model;
+            } res_t;
 
         public:
             create(Request& req)
@@ -317,7 +366,7 @@ public:
                     "Content-Type: application/json",
                     "Authorization: Bearer " + this->m_ctx.req.api_key,
                 };
-                std::string js_body = this->m_ctx.req.json_str();
+                std::string js_body = this->m_ctx.req.json_body();
                 int ret = curl_async->curl_init(CurlAsync::method_t::POST,
                     this->m_ctx.req.api_base,
                     headers,
@@ -341,13 +390,19 @@ public:
                 {
                 }
 
-                std::string operator*()
+                res_t operator*()
                 {
                     if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
                         log_err("iterator*: curl no init");
-                        return "";
+                        return {
+                            .content = "curl no init"
+                        };
                     }
-                    return this->m_ctx->curl_async->m_answer;
+                    return {
+                        .res = &this->m_ctx->curl_async->m_res,
+                        .content = this->m_ctx->curl_async->m_answer,
+                        .model = this->m_ctx->curl_async->m_model,
+                    };
                 }
 
                 bool operator!=(const iterator& other) const
@@ -378,7 +433,11 @@ public:
             iterator begin()
             {
                 setup();
-                return iterator(&this->m_ctx, false);
+
+                auto iter = iterator(&this->m_ctx, false);
+                iter.operator++();
+
+                return iter;
             }
 
             iterator end() { return iterator(&this->m_ctx, true); }
@@ -391,13 +450,34 @@ public:
 
 int main(int argc, char* argv[])
 {
-    for (const auto& answer : OpenaiAPI::ChatCompletion::create(
-             { .api_key = "",
-               .model = "gpt-3.5-turbo",
-               .messages = {
-                   { .role = "system", .content = "You are a helpful assistant." },
-                   { .role = "user", .content = "what you name ?" } } })) {
-        std::cout << answer << std::endl;
-    }
+    OpenaiAPI::ChatCompletion::Request::messages_t messages = {
+        { .role = "system", .content = "You are a helpful assistant." }
+    };
+
+    bool _exit = false;
+    std::string answer;
+    std::string prompte = "are you ok ?";
+    do {
+        messages.push_back({ .role = "user", .content = prompte });
+
+        for (const auto& res : OpenaiAPI::ChatCompletion::create(
+                 { .api_key = "",
+                   .model = "gpt-3.5-turbo",
+                   .messages = messages })) {
+            std::cout << "a: " << res.content << std::endl;
+            answer = res.content;
+        }
+        messages.push_back({ .role = "assistant", .content = answer });
+
+        std::cout << "q: " << prompte << std::endl;
+        std::cout << "a: " << answer << std::endl;
+
+        std::cout << "q: ";
+        std::cin >> prompte;
+        if ("exit" == prompte)
+            _exit = true;
+
+    } while (!_exit);
+
     return 0;
 }
