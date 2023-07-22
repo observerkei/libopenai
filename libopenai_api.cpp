@@ -7,10 +7,7 @@
 #include <cstdio>
 #include <ctime>
 #include <iostream>
-#include <nlohmann/json.hpp>
 #include <sstream>
-#include <string>
-#include <vector>
 
 #define log_dbg(fmt, ...) \
     printf("%s %s %ld " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
@@ -59,11 +56,14 @@ public:
 
             std::stringstream ss(ptr);
             std::string line;
+            bool print_skip_data = false;
 
             while (std::getline(ss, line)) {
                 if (0 != strncmp("data: ", line.c_str(), 6)) {
-                    if (line.length() && '{' == line[0])
+                    if (print_skip_data || (line.length() && '{' == line[0])) {
                         log_dbg("skip data: %s", line.c_str());
+                        print_skip_data = true;
+                    }
                     continue;
                 }
                 std::string data(line.c_str() + 6, line.length() - 6);
@@ -76,6 +76,7 @@ public:
                     if (!res.is_null()) {
                         curl_async->m_res.clear();
                         curl_async->m_res.push_back(res);
+                        std::cout << res.dump() << std::endl;
                     }
                     if (res["choices"][0]["finish_reason"].is_null()) {
                         std::string content = res["choices"][0]["delta"]["content"];
@@ -228,256 +229,139 @@ private:
     std::string m_body;
 };
 
-class OpenaiAPI {
-public:
-    class ChatCompletion {
-    public:
-        struct Request {
-        public:
-            std::string json_body()
-            {
-                nlohmann::json json_messages = nlohmann::json::array();
-
-                for (const auto& message : this->messages) {
-                    nlohmann::json json_obj;
-                    json_obj["role"] = message.role;
-                    json_obj["content"] = message.content;
-                    if (!message.name.empty())
-                        json_obj["name"] = message.name;
-                    if (!message.function_call.empty())
-                        json_obj["function_call"] = message.function_call;
-
-                    json_messages.push_back(json_obj);
-                }
-
-                nlohmann::json json_dump = { { "stream", this->stream },
-                    { "model", this->model },
-                    { "messages", json_messages } };
-
-                std::string jsd;
-                try {
-                    jsd = json_dump.dump(4, ' ', false, nlohmann::json::error_handler_t::ignore);
-                } catch (const nlohmann::json::exception& e) {
-                    std::cerr << "fail to dump js: " << e.what() << std::endl;
-                }
-
-                return jsd;
-            }
-
-            std::string api_base = "https://api.openai.com/v1/chat/completions";
-            std::string api_key;
-
-            std::string model;
-
-            struct message_t {
-                std::string role;
-                std::string content;
-                std::string name;
-                std::string function_call;
-            };
-            typedef std::vector<message_t> messages_t;
-            messages_t messages;
-
-            struct function_t {
-                std::string name;
-                std::string description;
-                nlohmann::json parameters;
-            };
-            typedef std::vector<function_t> functions_t;
-            functions_t functions;
-
-            nlohmann::json function_call;
-
-            float temperature = 1;
-            float top_p = 1;
-            int n = 1;
-            bool stream = true;
-            std::vector<std::string> stop;
-            int max_tokens;
-            float presence_penalty = 0;
-            float frequency_penalty = 0;
-            std::string logit_bias;
-            std::string user;
-        };
-
-        struct Response {
-            nlohmann::json data;
-            std::string id;
-            std::string object;
-            long created;
-            std::string model;
-            std::string content;
-
-            struct choice_t {
-                struct delta_t {
-                    std::string content;
-                };
-                int index;
-                delta_t delta;
-                std::string finish_reason;
-            };
-            std::vector<choice_t> choices;
-        };
-
-        class create {
-        public:
-            typedef struct
-            {
-                Request req;
-                CurlAsync* curl_async;
-            } ctx_t;
-
-            typedef struct {
-                std::vector<nlohmann::json>* res;
-                std::string content;
-                std::string model;
-            } res_t;
-
-        public:
-            create(Request& req)
-                : m_ctx({ .req = req, .curl_async = nullptr })
-            {
-            }
-
-            create(Request&& req)
-                : m_ctx({ .req = req, .curl_async = nullptr })
-            {
-            }
-
-            ~create()
-            {
-                if (this->m_ctx.curl_async) {
-                    delete this->m_ctx.curl_async;
-                    this->m_ctx.curl_async = nullptr;
-                }
-            }
-
-            int setup()
-            {
-                if (this->m_ctx.curl_async && this->m_ctx.curl_async->m_init) {
-                    return 0;
-                }
-                CurlAsync* curl_async = new CurlAsync;
-                if (!curl_async) {
-                    log_err("fail to new curl async");
-                    return -1;
-                }
-                std::vector<std::string> headers = {
-                    "Content-Type: application/json",
-                    "Authorization: Bearer " + this->m_ctx.req.api_key,
-                };
-                std::string js_body = this->m_ctx.req.json_body();
-                int ret = curl_async->curl_init(CurlAsync::method_t::POST,
-                    this->m_ctx.req.api_base,
-                    headers,
-                    js_body);
-                if (ret) {
-                    delete curl_async;
-                    log_err("fail to init curl");
-                    return -1;
-                }
-
-                this->m_ctx.curl_async = curl_async;
-                log_dbg("new init done");
-                return 0;
-            }
-
-            class iterator {
-            public:
-                iterator(ctx_t* ctx, bool complate)
-                    : m_ctx(ctx)
-                    , m_complete(complate)
-                {
-                }
-
-                res_t operator*()
-                {
-                    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
-                        log_err("iterator*: curl no init");
-                        return {
-                            .content = "curl no init"
-                        };
-                    }
-                    return {
-                        .res = &this->m_ctx->curl_async->m_res,
-                        .content = this->m_ctx->curl_async->m_answer,
-                        .model = this->m_ctx->curl_async->m_model,
-                    };
-                }
-
-                bool operator!=(const iterator& other) const
-                {
-                    return this->m_complete != other.m_complete;
-                }
-
-                bool operator==(const iterator& other) const
-                {
-                    return !this->operator!=(other);
-                }
-
-                void operator++()
-                {
-                    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
-                        this->m_complete = true;
-                        log_err("iterator++: curl no init");
-                        return;
-                    }
-                    this->m_complete = this->m_ctx->curl_async->pull() ? false : true;
-                }
-
-            private:
-                ctx_t* m_ctx;
-                bool m_complete;
-            };
-
-            iterator begin()
-            {
-                setup();
-
-                auto iter = iterator(&this->m_ctx, false);
-                iter.operator++();
-
-                return iter;
-            }
-
-            iterator end() { return iterator(&this->m_ctx, true); }
-
-        private:
-            ctx_t m_ctx;
-        };
-    };
-};
-
-int main(int argc, char* argv[])
+std::string OpenaiAPI::ChatCompletion::Request::json_body()
 {
-    OpenaiAPI::ChatCompletion::Request::messages_t messages = {
-        { .role = "system", .content = "You are a helpful assistant." }
+    nlohmann::json json_messages = nlohmann::json::array();
+
+    for (const auto& message : this->messages) {
+        nlohmann::json json_obj;
+        json_obj["role"] = message.role;
+        json_obj["content"] = message.content;
+        if (!message.name.empty())
+            json_obj["name"] = message.name;
+        if (!message.function_call.empty())
+            json_obj["function_call"] = message.function_call;
+
+        json_messages.push_back(json_obj);
+    }
+
+    nlohmann::json json_dump = { { "stream", this->stream },
+        { "model", this->model },
+        { "messages", json_messages } };
+
+    std::string jsd;
+    try {
+        jsd = json_dump.dump(4, ' ', false, nlohmann::json::error_handler_t::ignore);
+    } catch (const nlohmann::json::exception& e) {
+        std::cerr << "fail to dump js: " << e.what() << std::endl;
+    }
+
+    return jsd;
+}
+
+int OpenaiAPI::ChatCompletion::create::setup()
+{
+    if (this->m_ctx.curl_async && this->m_ctx.curl_async->m_init) {
+        return 0;
+    }
+    CurlAsync* curl_async = new CurlAsync;
+    if (!curl_async) {
+        log_err("fail to new curl async");
+        return -1;
+    }
+    std::vector<std::string> headers = {
+        "Content-Type: application/json",
+        "Authorization: Bearer " + this->m_ctx.req.api_key,
     };
+    std::string js_body = this->m_ctx.req.json_body();
+    int ret = curl_async->curl_init(CurlAsync::method_t::POST,
+        this->m_ctx.req.api_base,
+        headers,
+        js_body);
+    if (ret) {
+        delete curl_async;
+        log_err("fail to init curl");
+        return -1;
+    }
 
-    bool _exit = false;
-    std::string answer;
-    std::string prompte = "are you ok ?";
-    do {
-        messages.push_back({ .role = "user", .content = prompte });
-
-        for (const auto& res : OpenaiAPI::ChatCompletion::create(
-                 { .api_key = "",
-                   .model = "gpt-3.5-turbo",
-                   .messages = messages })) {
-            std::cout << "a: " << res.content << std::endl;
-            answer = res.content;
-        }
-        messages.push_back({ .role = "assistant", .content = answer });
-
-        std::cout << "q: " << prompte << std::endl;
-        std::cout << "a: " << answer << std::endl;
-
-        std::cout << "q: ";
-        std::cin >> prompte;
-        if ("exit" == prompte)
-            _exit = true;
-
-    } while (!_exit);
-
+    this->m_ctx.curl_async = curl_async;
+    log_dbg("new init done");
     return 0;
+}
+
+OpenaiAPI::ChatCompletion::create::iterator::iterator(ctx_t* ctx, bool complate)
+    : m_ctx(ctx)
+    , m_complete(complate)
+{
+}
+
+OpenaiAPI::ChatCompletion::create::res_t
+OpenaiAPI::ChatCompletion::create::iterator::operator*()
+{
+    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
+        log_err("iterator*: curl no init");
+        return {
+            .content = "curl no init"
+        };
+    }
+    return {
+        .res = &this->m_ctx->curl_async->m_res,
+        .content = this->m_ctx->curl_async->m_answer,
+        .model = this->m_ctx->curl_async->m_model,
+    };
+}
+
+bool OpenaiAPI::ChatCompletion::create::iterator::operator!=(const iterator& other) const
+{
+    return this->m_complete != other.m_complete;
+}
+
+bool OpenaiAPI::ChatCompletion::create::iterator::operator==(const iterator& other) const
+{
+    return !this->operator!=(other);
+}
+
+void OpenaiAPI::ChatCompletion::create::iterator::operator++()
+{
+    if (!this->m_ctx->curl_async || !this->m_ctx->curl_async->m_init) {
+        this->m_complete = true;
+        log_err("iterator++: curl no init");
+        return;
+    }
+    this->m_complete = this->m_ctx->curl_async->pull() ? false : true;
+}
+
+OpenaiAPI::ChatCompletion::create::create(Request& req)
+    : m_ctx({ .req = req, .curl_async = nullptr })
+{
+}
+
+OpenaiAPI::ChatCompletion::create::create(Request&& req)
+    : m_ctx({ .req = req, .curl_async = nullptr })
+{
+}
+
+OpenaiAPI::ChatCompletion::create::~create()
+{
+    if (this->m_ctx.curl_async) {
+        delete this->m_ctx.curl_async;
+        this->m_ctx.curl_async = nullptr;
+    }
+}
+
+OpenaiAPI::ChatCompletion::create::iterator
+OpenaiAPI::ChatCompletion::create::begin()
+{
+    setup();
+
+    auto iter = iterator(&this->m_ctx, false);
+    iter.operator++();
+
+    return iter;
+}
+
+OpenaiAPI::ChatCompletion::create::iterator
+OpenaiAPI::ChatCompletion::create::end()
+{
+    return iterator(&this->m_ctx, true);
 }
