@@ -2,6 +2,13 @@
 #include <iostream>
 #include <string>
 
+#define log_dbg(fmt, ...) fprintf(stdout, "[%s:%s:%ld]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
+#define input(prompt) ({ \
+    fprintf(stdout, prompt); \
+    std::string _input; \
+    std::getline(std::cin, _input, '\n'); \
+    _input; })
+
 int main(int argc, char* argv[])
 {
     OpenaiAPI::ChatCompletion::Request::messages_t messages = {
@@ -11,6 +18,8 @@ int main(int argc, char* argv[])
     bool _exit = false;
     std::string answer;
     std::string prompt = "are you ok ?";
+
+    log_dbg("q: %s", prompt.c_str());
     do {
         messages.push_back({ .role = "user", .content = prompt });
 
@@ -18,16 +27,14 @@ int main(int argc, char* argv[])
                  { .api_key = "",
                    .model = "gpt-3.5-turbo",
                    .messages = messages })) {
-            std::cout << "a: " << res.content << std::endl;
+            log_dbg("a: %s", res.content.c_str());
             answer = res.content;
         }
         messages.push_back({ .role = "assistant", .content = answer });
 
-        std::cout << "q: " << prompt << std::endl;
-        std::cout << "a: " << answer << std::endl;
+        log_dbg("q: %s\na: %s", prompt.c_str(), answer.c_str());
 
-        std::cout << "q: ";
-        std::cin >> prompt;
+        prompt = input("q: ");
         if ("exit" == prompt)
             _exit = true;
 

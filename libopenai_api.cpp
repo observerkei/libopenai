@@ -10,9 +10,12 @@
 #include <sstream>
 
 #define log_dbg(fmt, ...) \
-    printf("%s %s %ld " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
+    if (s_log_enable)     \
+    fprintf(stdout, "[%s:%s:%ld]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
 #define log_err log_dbg
 #define log_info log_dbg
+
+bool s_log_enable = false;
 
 class CurlAsync {
 public:
@@ -56,14 +59,34 @@ public:
 
             std::stringstream ss(ptr);
             std::string line;
-            bool print_skip_data = false;
+            if (curl_async->m_has_res && (0 != strncmp("data: ", ptr, 6))) {
+                // has error
+                std::string data = ptr;
+                size_t start = data.find('{');
+                size_t end = data.rfind('}');
+                if (start != std::string::npos
+                    && end != std::string::npos && start < end) {
+                    data = data.substr(start, end - start + 1);
+                }
+                curl_async->m_answer = data;
+
+                try {
+                    nlohmann::json res = nlohmann::json::parse(data);
+                    if (!res.is_null()) {
+                        curl_async->m_res.clear();
+                        curl_async->m_res.push_back(res);
+                        log_dbg("%s", res.dump().c_str());
+                    }
+                } catch (const nlohmann::json::exception& e) {
+                    log_err("JSON 错误: %s\nerr data:\n```\n%s\n```\n",
+                        e.what(), data.c_str());
+                    curl_async->m_answer += std::string(" ") + e.what();
+                }
+                return size * nmemb;
+            }
 
             while (std::getline(ss, line)) {
                 if (0 != strncmp("data: ", line.c_str(), 6)) {
-                    if (print_skip_data || (line.length() && '{' == line[0])) {
-                        log_dbg("skip data: %s", line.c_str());
-                        print_skip_data = true;
-                    }
                     continue;
                 }
                 std::string data(line.c_str() + 6, line.length() - 6);
@@ -76,22 +99,20 @@ public:
                     if (!res.is_null()) {
                         curl_async->m_res.clear();
                         curl_async->m_res.push_back(res);
-                        std::cout << res.dump() << std::endl;
+                        log_dbg("%s", res.dump().c_str());
                     }
                     if (res["choices"][0]["finish_reason"].is_null()) {
                         std::string content = res["choices"][0]["delta"]["content"];
                         curl_async->m_answer += content;
                         std::string model = res["model"];
                         curl_async->m_model = model;
-                        // std::cout << "answer: " << content << std::endl;
-                        // std::cout << curl_async->m_answer << std::endl;
+                        log_dbg("content: %s\nanswer:%s", content.c_str(), curl_async->m_answer.c_str());
                     }
                 } catch (const nlohmann::json::exception& e) {
                     // 处理键不存在的情况
-                    std::cerr << "JSON 错误: " << e.what() << std::endl;
-                    std::cout << "err data: " << data.length() << "\n```\n"
-                              << data << "\n```\n"
-                              << std::endl;
+                    log_err("JSON 错误: %s\nerr data: %zu \n```\n%s\n```\n",
+                        e.what(), data.length(), data.c_str());
+                    curl_async->m_answer += e.what();
                 }
             }
             return size * nmemb;
@@ -245,15 +266,17 @@ std::string OpenaiAPI::ChatCompletion::Request::json_body()
         json_messages.push_back(json_obj);
     }
 
-    nlohmann::json json_dump = { { "stream", this->stream },
+    nlohmann::json json_dump = {
+        { "stream", this->stream },
         { "model", this->model },
-        { "messages", json_messages } };
+        { "messages", json_messages }
+    };
 
     std::string jsd;
     try {
         jsd = json_dump.dump(4, ' ', false, nlohmann::json::error_handler_t::ignore);
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "fail to dump js: " << e.what() << std::endl;
+        log_err("fail to dump js: %s", e.what());
     }
 
     return jsd;
@@ -305,7 +328,7 @@ OpenaiAPI::ChatCompletion::create::iterator::operator*()
         };
     }
     return {
-        .res = &this->m_ctx->curl_async->m_res,
+        .response = &this->m_ctx->curl_async->m_res,
         .content = this->m_ctx->curl_async->m_answer,
         .model = this->m_ctx->curl_async->m_model,
     };

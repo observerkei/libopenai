@@ -3,9 +3,9 @@
 
 #ifdef __cplusplus
 
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 class CurlAsync;
 
@@ -54,12 +54,13 @@ public:
         };
 
         struct Response {
-            nlohmann::json data;
+            nlohmann::json data; // response
+            std::string content; // response stream content
+
             std::string id;
             std::string object;
             long created;
             std::string model;
-            std::string content;
 
             struct choice_t {
                 struct delta_t {
@@ -74,17 +75,16 @@ public:
 
         class create {
         public:
-            typedef struct
-            {
+            struct ctx_t {
                 Request req;
                 CurlAsync* curl_async;
-            } ctx_t;
+            };
 
-            typedef struct {
-                std::vector<nlohmann::json>* res;
+            struct res_t {
+                std::vector<nlohmann::json>* response;
                 std::string content;
                 std::string model;
-            } res_t;
+            };
 
         public:
             create(Request& req);
@@ -122,7 +122,6 @@ public:
 };
 
 #endif //__cplusplus
-
 
 #ifdef __cplusplus
 extern "C" {
