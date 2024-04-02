@@ -11,7 +11,7 @@
 
 #define log_dbg(fmt, ...) \
     if (s_log_enable)     \
-    fprintf(stdout, "[%s:%s:%ld]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
+    fprintf(stdout, "[%s:%s:%d]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
 #define log_err log_dbg
 #define log_info log_dbg
 

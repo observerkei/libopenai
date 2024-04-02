@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 
-#define log_dbg(fmt, ...) fprintf(stdout, "[%s:%s:%ld]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
+#define log_dbg(fmt, ...) fprintf(stdout, "[%s:%s:%d]  " fmt "\n", __FILE__, __func__, __LINE__, ##__VA_ARGS__)
 #define input(prompt) ({ \
     fprintf(stdout, prompt); \
     std::string _input; \

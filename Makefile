@@ -8,7 +8,7 @@ OBJS = $(patsubst %.cpp,%.o,$(filter-out main.cpp,$(SRCS)))
 LIBS = -pthread -lcurl -lssl -lcrypto -lz 
 FLAGS = -shared -fPIC -g
 
-$(TEST_APP): $(TARGET) main.o
+$(TEST_APP): $(OBJS) main.o
 	$(CC) $^ -o $@ $(LIBS)
 
 $(TARGET): $(OBJS:.cpp=.o)
